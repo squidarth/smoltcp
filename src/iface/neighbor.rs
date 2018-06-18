@@ -51,7 +51,7 @@ pub(crate) enum Answer {
 pub struct Cache<'a> {
     storage:      ManagedMap<'a, IpAddress, Neighbor>,
     silent_until: Instant,
-    gc_thresh: usize
+    gc_threshold: usize
 }
 
 impl<'a> Cache<'a> {
@@ -62,7 +62,7 @@ impl<'a> Cache<'a> {
     pub(crate) const ENTRY_LIFETIME: Duration = Duration { millis: 60_000 };
 
     /// Default number of entries in the cache before GC kicks in
-    pub(crate) const GC_THRESH: usize = 1024;
+    pub(crate) const GC_THRESHOLD: usize = 1024;
 
     /// Create a cache. The backing storage is cleared upon creation.
     ///
@@ -71,28 +71,26 @@ impl<'a> Cache<'a> {
     pub fn new<T>(storage: T) -> Cache<'a>
             where T: Into<ManagedMap<'a, IpAddress, Neighbor>> {
 
-        Cache::new_with_gc_thresh(storage, Cache::GC_THRESH)
+        Cache::new_with_limit(storage, Cache::GC_THRESHOLD)
     }
 
-    pub fn new_with_gc_thresh<T>(storage: T, gc_thresh: usize) -> Cache<'a>
+    pub fn new_with_limit<T>(storage: T, gc_threshold: usize) -> Cache<'a>
             where T: Into<ManagedMap<'a, IpAddress, Neighbor>> {
         let mut storage = storage.into();
         storage.clear();
 
-        Cache { storage, gc_thresh: gc_thresh, silent_until: Instant::from_millis(0) }
+        Cache { storage, gc_threshold, silent_until: Instant::from_millis(0) }
     }
 
     #[cfg(any(feature = "std", feature = "alloc"))]
-    pub fn run_gc(&mut self, timestamp: Instant) {
+    fn run_owned_gc(&mut self, timestamp: Instant) {
         let new_map = match self.storage {
             ManagedMap::Borrowed(_) => {
                 unreachable!()
             }
-            #[cfg(any(feature = "std", feature = "alloc"))]
             ManagedMap::Owned(ref mut map) => {
-                net_trace!("In the Owned Case");
-                map.iter_mut()
-                .map(|(key, value)| (*key, value.clone()))
+                map.into_iter()
+                .map(|(key, value)| (*key, *value))
                 .filter(|(_, v)| timestamp < v.expires_at)
                 .collect()
             }
@@ -106,13 +104,11 @@ impl<'a> Cache<'a> {
         debug_assert!(hardware_addr.is_unicast());
 
         match self.storage {
-            ManagedMap::Borrowed(_) =>  {
-                ();
-            }
+            ManagedMap::Borrowed(_) => (),
             #[cfg(any(feature = "std", feature = "alloc"))]
             ManagedMap::Owned(_) => {
-                if self.storage.len() >= self.gc_thresh {
-                    self.run_gc(timestamp);
+                if self.storage.len() >= self.gc_threshold {
+                    self.run_owned_gc(timestamp);
                 }
             }
         }
@@ -251,7 +247,7 @@ mod test {
 
     #[test]
     fn test_cache_gc() {
-        let mut cache = Cache::new_with_gc_thresh(BTreeMap::new(), 2);
+        let mut cache = Cache::new_with_limit(BTreeMap::new(), 2);
         cache.fill(MOCK_IP_ADDR_1, HADDR_A, Instant::from_millis(100));
         cache.fill(MOCK_IP_ADDR_2, HADDR_B, Instant::from_millis(50));
         // Adding third item after the expiration of the previous
